@@ -1,0 +1,40 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: nest
+      POSTGRES_PASSWORD: nest-secret-change-me
+      POSTGRES_DB: nest
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nest"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+pg8000://nest:nest-secret-change-me@db:5432/nest
+      SECRET_KEY: change-me-to-a-long-random-secret-min-32-chars
+      CORS_ORIGINS: http://localhost:4173,http://localhost:5173
+      COOKIE_SECURE: "false"
+      COOKIE_SAMESITE: lax
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build: .
+    ports:
+      - "4173:80"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
