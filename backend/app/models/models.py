@@ -371,3 +371,31 @@ class AuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     __table_args__ = (Index("ix_audit_biz_created", "business_id", "created_at"),)
+
+
+class IdempotencyKey(Base):
+    """Exactly-once guard for anonymous public submissions.
+
+    Optional `Idempotency-Key` header on website intake endpoints. The row is
+    inserted BEFORE the lead is created, so a concurrent retry with the same
+    key loses the unique race and receives the winner's stored response
+    instead of creating a duplicate lead. Mirrors the existing
+    AutomationRun dedupe_key pattern.
+    """
+
+    __tablename__ = "idempotency_keys"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uid)
+    business_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    endpoint: Mapped[str] = mapped_column(String(64), default="")
+    # JSON-encoded response handed back to the caller, e.g. {"referenceId": "..."}.
+    # Empty string while the winning request is still being processed.
+    response_json: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("business_id", "key", name="uq_idem_biz_key"),
+    )

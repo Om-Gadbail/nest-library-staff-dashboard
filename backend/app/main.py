@@ -6,6 +6,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
+from app.api.v1.public import config_router as public_config_router
+from app.api.v1.public import leads_router as public_leads_router
 from app.core.config import get_settings
 from app.core.db import Base
 from app.core.error_handler import api_exception_handler
@@ -66,6 +68,11 @@ def create_app() -> FastAPI:
     )
     app.add_exception_handler(ApiError, api_exception_handler)
     app.include_router(api_router)
+    # Anonymous website intake uses the website's fixed contract paths
+    # (/api/leads/*, /api/v1/public/*) — registered here, outside the
+    # authenticated /api/v1 staff router.
+    app.include_router(public_leads_router)
+    app.include_router(public_config_router)
 
     @app.get("/health", tags=["health"])
     def health():
