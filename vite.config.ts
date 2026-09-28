@@ -12,11 +12,14 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    // Locked local-dev port: Nest Staff Dashboard is ALWAYS :5176.
+    // strictPort fails fast instead of silently stealing another app's port.
+    port: 5176,
+    strictPort: true,
     host: true,
   },
   preview: {
-    port: 4173,
+    port: 4176,
     host: true,
   },
   build: {
