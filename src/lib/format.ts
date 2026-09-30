@@ -25,7 +25,8 @@ export function formatDateISO(date: Date): string {
   return date.toISOString().slice(0, 10)
 }
 
-export function initials(name: string): string {
+export function initials(name: string | null | undefined): string {
+  if (!name || typeof name !== 'string') return ''
   return name
     .split(' ')
     .filter(Boolean)

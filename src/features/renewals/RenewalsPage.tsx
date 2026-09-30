@@ -2,7 +2,7 @@ import { motion } from 'motion/react'
 import * as React from 'react'
 import { useSearchParams } from 'react-router'
 import { useDebouncedValue } from '@/hooks/useDebouncedValue'
-import { useMarkContacted, useRenewals } from '@/lib/business-queries'
+import { useConfirmRenewal, useRenewals } from '@/lib/business-queries'
 import { expiryLabel, formatDate, formatINR } from '@/lib/format'
 import { staggerChild, staggerParent } from '@/lib/motion'
 import { Avatar } from '@/components/ui/Avatar'
@@ -22,8 +22,6 @@ const TABS = [
   { key: 'today', label: 'Today' },
   { key: 'week', label: 'Next 7 days' },
   { key: 'expired', label: 'Expired' },
-  { key: 'contacted', label: 'Contacted' },
-  { key: 'renewed', label: 'Renewed' },
 ] as const
 
 export default function RenewalsPage() {
@@ -31,7 +29,7 @@ export default function RenewalsPage() {
   const initial = params.get('tab') ?? 'all'
   const [tab, setTab] = React.useState(initial)
   const { data, isLoading, isError, refetch } = useRenewals()
-  const mark = useMarkContacted()
+  const confirm = useConfirmRenewal()
   const [search, setSearch] = React.useState('')
   const debounced = useDebouncedValue(search, 200)
   const [renewFor, setRenewFor] = React.useState<{ customer_id: string; full_name: string } | null>(null)
@@ -42,8 +40,6 @@ export default function RenewalsPage() {
       if (tab === 'today' && r.status !== 'due-today') return false
       if (tab === 'week' && !((r.days_remaining ?? 99) >= 0 && (r.days_remaining ?? 99) <= 7)) return false
       if (tab === 'expired' && r.status !== 'overdue') return false
-      if (tab === 'contacted' && r.contact_status !== 'contacted') return false
-      if (tab === 'renewed' && r.contact_status !== 'renewed') return false
       if (!q) return true
       return r.customer_name.toLowerCase().includes(q)
     })
@@ -97,7 +93,7 @@ export default function RenewalsPage() {
                 <div className="mt-2.5 flex flex-col gap-2 sm:flex-row">
                   <Button variant="secondary" size="sm" className="flex-1" onClick={() => whatsappCustomer(r.customer_phone ?? '', r.customer_name, `Hi ${r.customer_name}, your ${r.plan} membership expires ${formatDate(r.due_at)}. Renew at Nest Library.`)}>WhatsApp</Button>
                   <Button variant="secondary" size="sm" className="flex-1" onClick={() => { window.location.href = `tel:${(r.customer_phone ?? '').replace(/\s/g, '')}` }}>Call</Button>
-                  <Button variant="secondary" size="sm" className="flex-1" disabled={r.contact_status === 'contacted' || mark.isPending} onClick={() => mark.mutate(r.renewal_id)}>{r.contact_status === 'contacted' ? 'Contacted' : 'Mark contacted'}</Button>
+                  <Button variant="secondary" size="sm" className="flex-1" disabled={confirm.isPending} onClick={() => confirm.mutate({ id: r.renewal_id, status: 'confirmed' })}>Confirm</Button>
                   <Button size="sm" className="flex-1" onClick={() => setRenewFor({ customer_id: r.customer_id, full_name: r.customer_name })}>Renew</Button>
                 </div>
               </li>

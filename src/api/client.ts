@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { AxiosError } from 'axios'
+import type { AxiosError, InternalAxiosRequestConfig } from 'axios'
 
 export const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api/v1'
@@ -82,8 +82,13 @@ export function toApiError(error: unknown): ApiErrorShape {
 
 /**
  * Central HTTP client.
- * Cookie-based sessions (HttpOnly): browser sends `nest_at` automatically,
- * so we use `withCredentials` and NEVER store tokens in localStorage.
+ *
+ * Auth contract (matches backend /api/v1/auth + owner dashboard):
+ * - Access token: short-lived Bearer JWT kept IN MEMORY ONLY and attached
+ *   via the `Authorization` header on every request.
+ * - Refresh: HttpOnly `refresh_token` cookie (set by login/refresh, path
+ *   /api/v1/auth) sent automatically via `withCredentials`; used for silent
+ *   refresh on 401. NEVER store tokens in localStorage.
  */
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -92,15 +97,71 @@ export const apiClient = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
+let accessToken: string | null = null
+
+export function setAccessToken(token: string | null): void {
+  accessToken = token
+}
+
+export function getAccessToken(): string | null {
+  return accessToken
+}
+
 let onUnauthorized: (() => void) | null = null
 
 export function setUnauthorizedHandler(fn: (() => void) | null) {
   onUnauthorized = fn
 }
 
+let refreshPromise: Promise<string> | null = null
+
+/** Silent refresh via the HttpOnly cookie (no interceptors — avoids recursion). */
+function silentRefresh(): Promise<string> {
+  if (refreshPromise) return refreshPromise
+  const bare = axios.create({
+    baseURL: API_BASE_URL,
+    timeout: 15000,
+    withCredentials: true,
+    headers: { 'Content-Type': 'application/json' },
+  })
+  refreshPromise = bare.post('/auth/refresh', {}).then((r) => {
+    const next = r.data?.access_token as string | undefined
+    if (!next) throw new Error('refresh failed')
+    setAccessToken(next)
+    return next
+  })
+  const done = () => {
+    refreshPromise = null
+  }
+  refreshPromise.then(done, done)
+  return refreshPromise
+}
+
+apiClient.interceptors.request.use((config: InternalAxiosRequestConfig) => {
+  if (accessToken) config.headers.Authorization = `Bearer ${accessToken}`
+  return config
+})
+
 apiClient.interceptors.response.use(
   (res) => res,
-  (error: unknown) => {
+  async (error: unknown) => {
+    const ax = error as AxiosError
+    const original = ax.config as
+      | (InternalAxiosRequestConfig & { _retried?: boolean })
+      | undefined
+    const status = ax.response?.status
+    const url = original?.url ?? ''
+    const isAuthCall = url.includes('/auth/login') || url.includes('/auth/refresh')
+    if (status === 401 && original && !original._retried && !isAuthCall) {
+      original._retried = true
+      try {
+        const token = await silentRefresh()
+        original.headers.Authorization = `Bearer ${token}`
+        return apiClient(original)
+      } catch {
+        setAccessToken(null)
+      }
+    }
     const shaped = toApiError(error)
     if (shaped.kind === 'auth' && !window.location.pathname.startsWith('/login')) {
       onUnauthorized?.()

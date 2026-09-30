@@ -19,7 +19,7 @@ import { useGreeting } from '@/hooks/useGreeting'
 import {
   useActivities,
   useDashboard,
-  useMarkContacted,
+  useConfirmRenewal,
   useMemberships,
   useOps,
   usePayments,
@@ -72,7 +72,7 @@ export default function DashboardPage() {
   const memberships = useMemberships()
   const payments = usePayments()
   const activities = useActivities()
-  const markContacted = useMarkContacted()
+  const confirmRenewal = useConfirmRenewal()
   const { user } = useAuth()
   const firstName = user?.full_name?.split(' ')?.[0] ?? 'there'
 
@@ -277,13 +277,13 @@ export default function DashboardPage() {
                       {(renewals.data ?? []).slice(0, 5).map((r) => (
                         <tr key={r.renewal_id} className="border-b border-line-subtle last:border-0 hover:bg-app/50">
                           <td className="px-3 py-2.5"><div className="flex items-center gap-2"><Avatar name={r.customer_name} className="size-7 text-xs" /><span className="font-medium text-ink">{r.customer_name}</span></div></td>
-                          <td className="px-3 py-2.5"><MembershipBadge status={r.plan} /></td>
+                          <td className="px-3 py-2.5"><MembershipBadge status={r.status === 'overdue' ? 'expired' : r.status === 'due-today' ? 'expiring' : 'active'} /></td>
                           <td className="px-3 py-2.5 text-ink-secondary">{formatDate(r.due_at)} · {expiryLabel(r.due_at)}</td>
-                          <td className="px-3 py-2.5"><PaymentBadge status={r.contact_status === 'renewed' ? 'paid' : r.status === 'overdue' ? 'failed' : 'pending'} /></td>
+                          <td className="px-3 py-2.5"><PaymentBadge status={r.status === 'overdue' ? 'failed' : 'pending'} /></td>
                           <td className="px-3 py-2.5">
                             <div className="flex justify-end gap-1.5">
                               <Button variant="secondary" size="sm" aria-label={`Call ${r.customer_name}`} onClick={() => { window.location.href = `tel:${(r.customer_phone ?? '').replace(/\s/g, '')}` }}><Phone className="size-4" /></Button>
-                              <Button variant="secondary" size="sm" onClick={() => markContacted.mutate(r.renewal_id)}>Contacted</Button>
+                              <Button variant="secondary" size="sm" onClick={() => confirmRenewal.mutate({ id: r.renewal_id, status: 'confirmed' })}>Confirm</Button>
                               <Button size="sm" onClick={() => setRenewFor({ customer_id: r.customer_id, full_name: r.customer_name })}>Renew</Button>
                             </div>
                           </td>

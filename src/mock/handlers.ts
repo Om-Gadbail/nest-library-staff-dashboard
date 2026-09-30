@@ -4,6 +4,7 @@ import { store } from './business'
 import {
   addCustomerNote,
   addLeadNote,
+  archiveTask,
   completeTask,
   convertLead,
   createAdmission,
@@ -26,7 +27,6 @@ import {
   updateStaffStatus,
   updateTask,
   type BookingInput,
-  type LeadInput,
   type TaskInput,
 } from './business-service'
 
@@ -42,8 +42,8 @@ import {
 
 function page(items: unknown[], url: URL) {
   const pageNum = Number(url.searchParams.get('page') ?? 1)
-  const size = Number(url.searchParams.get('page_size') ?? 100)
-  const q = (url.searchParams.get('q') ?? '').toLowerCase()
+  const size = Number(url.searchParams.get('page_size') ?? url.searchParams.get('limit') ?? 100)
+  const q = (url.searchParams.get('q') ?? url.searchParams.get('search') ?? '').toLowerCase()
   let rows = items
   if (q) {
     rows = rows.filter((r) =>
@@ -51,29 +51,57 @@ function page(items: unknown[], url: URL) {
     )
   }
   const start = (pageNum - 1) * size
-  return { items: rows.slice(start, start + size), total: rows.length, page: pageNum, page_size: size }
+  return {
+    items: rows.slice(start, start + size),
+    total: rows.length,
+    limit: size,
+    offset: start,
+    page: pageNum,
+    page_size: size,
+  }
 }
 
+/**
+ * Demo session in the CANONICAL backend shape (nested user/business/
+ * membership + canonical `.read` permission keys). The app normalizes this
+ * via normalizeMe() exactly like the real GET /auth/me response.
+ */
 const DEMO_ME = {
-  user_id: 'demo-owner',
-  full_name: 'Nest Owner',
-  email: 'owner@nestlibrary.in',
-  businesses: [
-    {
-      business_id: 'nest-library-001',
-      name: 'Nest Library',
-      role: 'owner',
-      timezone: 'Asia/Kolkata',
-    },
-  ],
+  user: {
+    id: 'demo-owner',
+    email: 'owner@nestlibrary.in',
+    full_name: 'Nest Owner',
+    phone: null,
+    is_active: true,
+    is_verified: true,
+    last_login_at: null,
+  },
+  business: {
+    id: 'nest-library-001',
+    slug: 'nest',
+    name: 'Nest Library',
+    business_type: 'fitness',
+    status: 'active',
+  },
+  membership: {
+    business_id: 'nest-library-001',
+    role: 'OWNER',
+    status: 'active',
+    is_default: true,
+  },
   permissions: [
-    'dashboard.view', 'customers.view', 'customers.manage', 'leads.view', 'leads.manage',
-    'leads.convert', 'admissions.create', 'memberships.view', 'memberships.manage',
-    'renewals.manage', 'payments.view', 'payments.manage', 'payments.refund',
-    'bookings.view', 'bookings.manage', 'bookings.override', 'tasks.view', 'tasks.manage',
-    'notifications.view', 'notifications.manage', 'analytics.view', 'staff.view',
-    'staff.invite', 'staff.role', 'staff.status', 'settings.view', 'settings.manage',
-    'settings.limited', 'whatsapp.view', 'whatsapp.manage', 'whatsapp.send', 'jobs.run',
+    'dashboard.read', 'customers.read', 'customers.create', 'customers.update',
+    'members.read', 'members.create', 'members.update',
+    'memberships.read', 'memberships.create', 'memberships.update',
+    'membership_plans.read', 'leads.read', 'leads.create', 'leads.update',
+    'bookings.read', 'bookings.create', 'bookings.update',
+    'attendance.read', 'attendance.create',
+    'payments.read', 'payments.create', 'payments.refund',
+    'renewals.read', 'renewals.create', 'renewals.update',
+    'tasks.read', 'tasks.create', 'tasks.update',
+    'notifications.read', 'growth.read', 'reports.read',
+    'settings.read', 'settings.update', 'users.read', 'users.create', 'users.update',
+    'whatsapp.manage', 'automation.manage', 'audit.read',
   ],
 }
 
@@ -113,37 +141,193 @@ export const handlers = [
     })
   }),
   http.get(`${API_BASE_URL}/memberships`, ({ request }) =>
-    HttpResponse.json(page([...store.memberships], new URL(request.url))),
+    HttpResponse.json(
+      page(
+        store.memberships.map((m) => ({
+          id: m.membership_id,
+          member_id: m.customer_id,
+          customer_id: m.customer_id,
+          status: m.status === 'expired' ? 'expired' : 'active',
+          payment_state: m.payment_state === 'paid' ? 'paid' : 'unpaid',
+          start_date: m.start_at,
+          end_date: m.expires_at,
+          price: m.amount,
+          final_amount: m.amount,
+          notes: '',
+        })),
+        new URL(request.url),
+      ),
+    ),
   ),
   http.get(`${API_BASE_URL}/renewals`, ({ request }) =>
-    HttpResponse.json(page([...store.renewals], new URL(request.url))),
+    HttpResponse.json(
+      page(
+        store.renewals.map((r) => ({
+          id: r.renewal_id,
+          member_id: r.customer_id,
+          due_date: r.due_at,
+          renewal_amount: r.amount,
+          status: r.status === 'overdue' ? 'expired' : 'pending',
+        })),
+        new URL(request.url),
+      ),
+    ),
   ),
+  http.post(`${API_BASE_URL}/renewals/:id/status`, async ({ params, request }) => {
+    const b = await bodyOf(request)
+    const r = store.renewals.find((x) => x.renewal_id === String(params.id))
+    if (!r) return HttpResponse.json({ error: { code: 'not_found', message: 'Renewal not found' } }, { status: 404 })
+    // Mock store keeps UI buckets; confirmed stays visible, expired moves bucket.
+    if (b.status === 'expired') r.status = 'overdue'
+    else if (b.status === 'cancelled') r.status = 'upcoming'
+    return HttpResponse.json({ ok: true })
+  }),
   http.get(`${API_BASE_URL}/leads`, ({ request }) =>
-    HttpResponse.json(page([...store.leads], new URL(request.url))),
+    HttpResponse.json(
+      page(
+        store.leads.map((l) => ({
+          id: l.lead_id,
+          display_name: l.full_name,
+          phone: l.phone,
+          email: l.email ?? null,
+          source: l.source,
+          source_detail: '',
+          status:
+            l.stage === 'interested' ? 'qualified'
+            : l.stage === 'follow-up' ? 'booked'
+            : l.stage,
+          service_interest: l.interested_plan ?? '',
+          message: l.notes ?? '',
+          follow_up_at: l.follow_up_at ?? null,
+          created_at: l.created_at,
+          updated_at: l.created_at,
+        })),
+        new URL(request.url),
+      ),
+    ),
   ),
   http.get(`${API_BASE_URL}/leads/:id`, ({ params }) => {
     const lead = store.leads.find((l) => l.lead_id === String(params.id))
     if (!lead) return HttpResponse.json({ error: { code: 'not_found', message: 'Lead not found' } }, { status: 404 })
     return HttpResponse.json({
-      lead,
-      activities: store.activities.filter((a) => a.detail?.includes(lead.full_name)),
+      id: lead.lead_id,
+      display_name: lead.full_name,
+      phone: lead.phone,
+      email: lead.email ?? null,
+      source: lead.source,
+      source_detail: '',
+      status:
+        lead.stage === 'interested' ? 'qualified'
+        : lead.stage === 'follow-up' ? 'booked'
+        : lead.stage,
+      service_interest: lead.interested_plan ?? '',
+      message: lead.notes ?? '',
+      follow_up_at: lead.follow_up_at ?? null,
+      created_at: lead.created_at,
+      updated_at: lead.created_at,
     })
   }),
+  http.get(`${API_BASE_URL}/leads/:id/activities`, ({ params }) => {
+    const lead = store.leads.find((l) => l.lead_id === String(params.id))
+    const rows = store.activities
+      .filter((a) => (lead ? a.detail?.includes(lead.full_name) : false))
+      .map((a) => ({
+        id: a.activity_id,
+        lead_id: String(params.id),
+        activity_type: a.kind ?? 'note',
+        note: `${a.action}${a.detail ? ` — ${a.detail}` : ''}`,
+        created_at: a.created_at,
+      }))
+    return HttpResponse.json({ items: rows, total: rows.length, limit: 100, offset: 0 })
+  }),
   http.get(`${API_BASE_URL}/bookings`, ({ request }) =>
-    HttpResponse.json(page([...store.bookings], new URL(request.url))),
+    HttpResponse.json(
+      page(
+        store.bookings.map((b) => ({
+          id: b.booking_id,
+          title: b.title,
+          booking_type: b.service ?? '',
+          display_name: b.customer_name,
+          requested_start_at: b.starts_at,
+          requested_end_at: b.ends_at,
+          status:
+            b.status === 'scheduled' || b.status === 'pending' ? 'requested'
+            : b.status === 'no-show' ? 'no_show'
+            : b.status,
+          notes: b.notes ?? '',
+        })),
+        new URL(request.url),
+      ),
+    ),
   ),
   http.get(`${API_BASE_URL}/payments`, ({ request }) =>
-    HttpResponse.json(page([...store.payments], new URL(request.url))),
+    HttpResponse.json(
+      page(
+        store.payments.map((p) => ({
+          id: p.payment_id,
+          member_id: p.customer_id,
+          customer_id: p.customer_id,
+          amount: p.amount,
+          status: p.status === 'partial' ? 'partially_paid' : p.status,
+          method: p.method,
+          paid_at: p.received_at,
+          invoice_no: p.receipt_no,
+          notes: '',
+        })),
+        new URL(request.url),
+      ),
+    ),
   ),
   http.get(`${API_BASE_URL}/notifications`, ({ request }) =>
-    HttpResponse.json(page([...store.notifications], new URL(request.url))),
+    HttpResponse.json(
+      page(
+        store.notifications.map((n) => ({
+          id: n.notification_id,
+          notification_type: n.kind,
+          title: n.title,
+          body: n.body,
+          severity: 'info',
+          read_at: n.read ? n.created_at : null,
+          created_at: n.created_at,
+        })),
+        new URL(request.url),
+      ),
+    ),
   ),
   http.get(`${API_BASE_URL}/notifications/unread-count`, () =>
     HttpResponse.json({ unread: store.notifications.filter((n) => !n.read && !n.dismissed).length }),
   ),
   http.get(`${API_BASE_URL}/tasks`, ({ request }) =>
-    HttpResponse.json(page([...store.tasks], new URL(request.url))),
+    HttpResponse.json(
+      page(
+        store.tasks.map((t) => ({
+          id: t.task_id,
+          title: t.title,
+          description: t.notes ?? '',
+          priority: t.priority,
+          assigned_to_user_id: null,
+          due_at: t.due_at ?? null,
+          status:
+            t.status === 'done' || t.status === 'completed' ? 'completed'
+            : t.status === 'in-progress' ? 'in_progress'
+            : t.status === 'archived' ? 'cancelled'
+            : 'open',
+          created_at: t.created_at ?? new Date().toISOString(),
+        })),
+        new URL(request.url),
+      ),
+    ),
   ),
+  http.post(`${API_BASE_URL}/tasks/:id/status`, async ({ params, request }) => {
+    const b = await bodyOf(request)
+    const t = store.tasks.find((x) => x.task_id === String(params.id))
+    if (!t) return HttpResponse.json({ error: { code: 'not_found', message: 'Task not found' } }, { status: 404 })
+    if (b.status === 'completed') await completeTask(t.task_id)
+    else if (b.status === 'cancelled') await archiveTask(t.task_id)
+    else if (b.status === 'in_progress') t.status = 'in-progress'
+    else t.status = 'open'
+    return HttpResponse.json({ ok: true })
+  }),
   http.get(`${API_BASE_URL}/activities`, ({ request }) =>
     HttpResponse.json(page([...store.activities], new URL(request.url))),
   ),
@@ -298,20 +482,37 @@ export const handlers = [
   http.post(`${API_BASE_URL}/leads`, async ({ request }) => {
     const b = await bodyOf(request)
     const out = await createLead({
-      full_name: String(b.full_name ?? ''),
+      full_name: String(b.display_name ?? b.full_name ?? ''),
       phone: String(b.phone ?? ''),
       email: (b.email as string) ?? undefined,
       source: String(b.source ?? 'Walk-in'),
-      interested_plan: b.interested_plan as 'monthly' | undefined,
+      interested_plan: (b.service_interest ?? b.interested_plan) as 'monthly' | undefined,
       assigned_to: (b.assigned_to as string) ?? undefined,
-      notes: (b.notes as string) ?? undefined,
+      notes: String(b.message ?? b.notes ?? '') || undefined,
       follow_up_at: (b.follow_up_at as string) ?? undefined,
     })
     return HttpResponse.json(out, { status: 201 })
   }),
   http.patch(`${API_BASE_URL}/leads/:id`, async ({ params, request }) => {
     const b = await bodyOf(request)
-    const out = await updateLead(String(params.id), b as Partial<LeadInput>)
+    const out = await updateLead(String(params.id), {
+      full_name: (b.display_name ?? b.full_name) as string | undefined,
+      phone: b.phone as string | undefined,
+      email: b.email as string | undefined,
+      source: b.source as string | undefined,
+      interested_plan: b.service_interest as 'monthly' | undefined,
+      notes: b.message as string | undefined,
+      follow_up_at: b.follow_up_at as string | undefined,
+    })
+    return HttpResponse.json(out)
+  }),
+  http.post(`${API_BASE_URL}/leads/:id/status`, async ({ params, request }) => {
+    const b = await bodyOf(request)
+    const toStage =
+      b.status === 'qualified' ? 'interested'
+      : b.status === 'booked' ? 'follow-up'
+      : (b.status as 'new') ?? 'new'
+    const out = await updateLeadStage(String(params.id), toStage)
     return HttpResponse.json(out)
   }),
   http.post(`${API_BASE_URL}/leads/:id/notes`, async ({ params, request }) => {
@@ -319,18 +520,20 @@ export const handlers = [
     await addLeadNote(String(params.id), String(b.note ?? ''))
     return HttpResponse.json({ ok: true })
   }),
-  http.post(`${API_BASE_URL}/leads/:id/convert`, async ({ params, request }) => {
-    const b = await bodyOf(request)
+  http.post(`${API_BASE_URL}/leads/:id/convert`, async ({ params }) => {
     try {
       const out = await convertLead({
         lead_id: String(params.id),
-        plan: (b.plan as 'monthly') ?? 'monthly',
-        start_at: String(b.start_at ?? new Date().toISOString()),
-        amount: Number(b.amount ?? 0),
-        paid: Number(b.paid ?? 0),
-        method: (b.method as 'upi') ?? 'upi',
+        plan: 'monthly',
+        start_at: new Date().toISOString(),
+        amount: 2000,
+        paid: 2000,
+        method: 'upi',
       })
-      return HttpResponse.json(out, { status: 201 })
+      return HttpResponse.json(
+        { id: out.customer.customer_id, contact: { display_name: out.customer.full_name } },
+        { status: 201 },
+      )
     } catch (e) {
       return HttpResponse.json(
         { error: { code: 'conflict', message: (e as Error).message } },
@@ -340,22 +543,22 @@ export const handlers = [
   }),
   http.post(`${API_BASE_URL}/bookings`, async ({ request }) => {
     const b = await bodyOf(request)
-    const starts = String(b.starts_at ?? '')
-    const ends = String(b.ends_at ?? '')
+    const starts = String(b.requested_start_at ?? b.starts_at ?? '')
+    const ends = String(b.requested_end_at ?? b.ends_at ?? '')
     try {
       const input: BookingInput = {
         title: String(b.title ?? ''),
-        service: (b.service as string) ?? undefined,
+        service: ((b.booking_type ?? b.service) as string) ?? undefined,
         customer_id: (b.customer_id as string) ?? undefined,
-        customer_name: String(b.customer_name ?? ''),
-        customer_phone: (b.customer_phone as string) ?? undefined,
+        customer_name: String(b.display_name ?? b.customer_name ?? ''),
+        customer_phone: (b.phone ?? b.customer_phone) as string | undefined,
         staff: (b.staff as string) ?? undefined,
         date: starts.slice(0, 10),
         start_time: starts.slice(11, 16),
         end_time: ends.slice(11, 16),
         notes: (b.notes as string) ?? undefined,
       }
-      const out = await createBooking(input, { allowOverlap: Boolean(b.allow_overlap) })
+      const out = await createBooking(input, { allowOverlap: true })
       return HttpResponse.json(out, { status: 201 })
     } catch (e) {
       return HttpResponse.json(
@@ -370,10 +573,27 @@ export const handlers = [
       title: b.title as string | undefined,
       notes: b.notes as string | undefined,
     }
-    const out = await updateBooking(String(params.id), patch, {
-      allowOverlap: Boolean(b.allow_overlap),
-    })
-    if (b.status) await updateBookingStatus(String(params.id), b.status as 'scheduled')
+    const out = await updateBooking(String(params.id), patch, { allowOverlap: true })
+    return HttpResponse.json(out)
+  }),
+  http.post(`${API_BASE_URL}/bookings/:id/confirm`, async ({ params }) => {
+    const out = await updateBookingStatus(String(params.id), 'confirmed')
+    return HttpResponse.json(out)
+  }),
+  http.post(`${API_BASE_URL}/bookings/:id/cancel`, async ({ params }) => {
+    const out = await updateBookingStatus(String(params.id), 'cancelled')
+    return HttpResponse.json(out)
+  }),
+  http.post(`${API_BASE_URL}/bookings/:id/complete`, async ({ params }) => {
+    const out = await updateBookingStatus(String(params.id), 'completed')
+    return HttpResponse.json(out)
+  }),
+  http.post(`${API_BASE_URL}/bookings/:id/no-show`, async ({ params }) => {
+    const out = await updateBookingStatus(String(params.id), 'no-show')
+    return HttpResponse.json(out)
+  }),
+  http.post(`${API_BASE_URL}/bookings/:id/reopen`, async ({ params }) => {
+    const out = await updateBookingStatus(String(params.id), 'scheduled')
     return HttpResponse.json(out)
   }),
   http.post(`${API_BASE_URL}/tasks`, async ({ request }) => {
@@ -384,14 +604,19 @@ export const handlers = [
       customer_id: (b.customer_id as string) ?? undefined,
       priority: (b.priority as TaskInput['priority']) ?? 'medium',
       due_at: (b.due_at as string) ?? undefined,
-      notes: (b.notes as string) ?? undefined,
+      notes: (b.description ?? b.notes) as string | undefined,
     }
     const out = await createTask(input)
     return HttpResponse.json(out, { status: 201 })
   }),
   http.patch(`${API_BASE_URL}/tasks/:id`, async ({ params, request }) => {
     const b = await bodyOf(request)
-    const out = await updateTask(String(params.id), b as Partial<TaskInput>)
+    const out = await updateTask(String(params.id), {
+      title: b.title as string | undefined,
+      priority: b.priority as TaskInput['priority'],
+      due_at: b.due_at as string | undefined,
+      notes: b.description as string | undefined,
+    })
     return HttpResponse.json(out)
   }),
   http.patch(`${API_BASE_URL}/notifications/:id/read`, async ({ params }) => {
@@ -486,5 +711,173 @@ export const handlers = [
       phone_number_id_set: false, has_token: false,
       reminder_days: '7,3,1,0', templates: 'renewal_reminder',
     }),
+  ),
+
+  /* ---- canonical contract (mirrors the real FastAPI shapes) ----
+   * The app's live code paths call these endpoints; the mock serves the
+   * same in-memory store translated into canonical rows so unit tests
+   * exercise the real adapters (adaptLead/adaptBooking/...). */
+
+  http.get(`${API_BASE_URL}/dashboard/overview`, () =>
+    HttpResponse.json({
+      business_id: 'nest-library-001',
+      generated_at: new Date().toISOString(),
+      leads: {
+        new: store.leads.filter((l) => l.stage === 'new').length,
+        follow_ups_due: store.leads.filter((l) => l.stage === 'follow-up').length,
+        created_today: store.leads.length,
+      },
+      bookings: { requested: store.bookings.length, created_today: store.bookings.length },
+      notifications: { unread: store.notifications.filter((n) => !n.read).length },
+      tasks: { mine_open: store.tasks.length, mine_overdue: 0, open_total: store.tasks.length },
+      recent_leads: store.leads.slice(0, 4).map((l) => ({
+        id: l.lead_id,
+        display_name: l.full_name,
+        status: l.stage === 'interested' ? 'qualified' : l.stage === 'follow-up' ? 'contacted' : l.stage,
+        source: l.source,
+        created_at: l.created_at,
+      })),
+      recent_activity: store.activities.slice(0, 5).map((a) => ({
+        id: a.activity_id,
+        activity_type: a.kind ?? 'note',
+        note: `${a.action}${a.detail ? ` — ${a.detail}` : ''}`,
+        actor_user_id: null,
+        created_at: a.created_at,
+      })),
+    }),
+  ),
+  http.get(`${API_BASE_URL}/dashboard/activity`, ({ request }) =>
+    HttpResponse.json(
+      page(
+        store.activities.map((a) => ({
+          id: a.activity_id,
+          action: a.action,
+          entity_type: a.kind ?? 'note',
+          entity_id: null,
+          actor_user_id: null,
+          result: 'success',
+          request_id: null,
+          meta: { note: a.detail ?? '' },
+          created_at: a.created_at,
+        })),
+        new URL(request.url),
+      ),
+    ),
+  ),
+  http.get(`${API_BASE_URL}/dashboard/bookings/summary`, () =>
+    HttpResponse.json({ requested: store.bookings.length, confirmed: 0, today: store.bookings.length }),
+  ),
+  http.get(`${API_BASE_URL}/members`, ({ request }) =>
+    HttpResponse.json(
+      page(
+        store.customers.map((c) => ({
+          id: c.customer_id,
+          customer_id: null,
+          contact_id: null,
+          lead_id: null,
+          display_name: c.full_name,
+          phone: c.phone,
+          email: null,
+          status: 'active',
+          source: 'walk_in',
+          emergency_contact_name: '',
+          emergency_contact_phone: null,
+          seat_preference: '',
+          notes: c.notes ?? '',
+          created_at: c.joined_at,
+          updated_at: c.joined_at,
+        })),
+        new URL(request.url),
+      ),
+    ),
+  ),
+  http.get(`${API_BASE_URL}/members/:id/profile`, ({ params }) => {
+    const id = String(params.id)
+    const c = store.customers.find((x) => x.customer_id === id)
+    if (!c) return HttpResponse.json({ error: { code: 'not_found', message: 'Member not found' } }, { status: 404 })
+    return HttpResponse.json({
+      member: {
+        id: c.customer_id, display_name: c.full_name, phone: c.phone, status: 'active',
+        notes: c.notes ?? '', created_at: c.joined_at, updated_at: c.joined_at,
+      },
+      current_membership: null,
+      memberships: store.memberships.filter((m) => m.customer_id === id).map((m) => ({
+        id: m.membership_id, member_id: id, status: 'active', payment_state: 'paid',
+        start_date: m.start_at, end_date: m.expires_at, final_amount: m.amount, notes: '',
+      })),
+      payments: store.payments.filter((p) => p.customer_id === id).map((p) => ({
+        id: p.payment_id, member_id: id, amount: p.amount, status: p.status,
+        method: p.method, paid_at: p.received_at, invoice_no: p.receipt_no, notes: '',
+      })),
+      attendance: [],
+      renewals: store.renewals.filter((r) => r.customer_id === id).map((r) => ({
+        id: r.renewal_id, member_id: id, due_date: r.due_at, renewal_amount: r.amount,
+        status: r.status === 'upcoming' ? 'pending' : 'expired',
+      })),
+      active_seat_allocation: null,
+    })
+  }),
+  http.get(`${API_BASE_URL}/members/:id`, ({ params }) => {
+    const id = String(params.id)
+    const c = store.customers.find((x) => x.customer_id === id)
+    if (!c) return HttpResponse.json({ error: { code: 'not_found', message: 'Member not found' } }, { status: 404 })
+    return HttpResponse.json({ id: c.customer_id, display_name: c.full_name, phone: c.phone, status: 'active', notes: c.notes ?? '' })
+  }),
+  http.post(`${API_BASE_URL}/members`, async ({ request }) => {
+    const b = await bodyOf(request)
+    const c = {
+      customer_id: store.next('c'),
+      business_id: 'nest-library-001',
+      full_name: String(b.display_name ?? ''),
+      phone: String(b.phone ?? ''),
+      email: (b.email as string) ?? undefined,
+      notes: (b.notes as string) ?? undefined,
+      joined_at: new Date().toISOString(),
+      status: 'active' as const,
+      plan: 'monthly' as const,
+      expires_at: new Date().toISOString().slice(0, 10),
+    }
+    store.customers.unshift(c)
+    return HttpResponse.json({ id: c.customer_id, display_name: c.full_name }, { status: 201 })
+  }),
+  http.patch(`${API_BASE_URL}/members/:id`, async ({ params, request }) => {
+    const b = await bodyOf(request)
+    const c = store.customers.find((x) => x.customer_id === String(params.id))
+    if (!c) return HttpResponse.json({ error: { code: 'not_found', message: 'Member not found' } }, { status: 404 })
+    if (typeof b.notes === 'string') c.notes = b.notes
+    if (typeof b.phone === 'string') c.phone = b.phone
+    return HttpResponse.json({ id: c.customer_id, display_name: c.full_name })
+  }),
+  http.get(`${API_BASE_URL}/membership-plans`, () =>
+    HttpResponse.json({
+      items: [
+        { id: 'plan-monthly', code: 'monthly', name: 'Monthly', duration_months: 1, price: '2000', currency: 'INR', is_active: true },
+        { id: 'plan-quarterly', code: 'quarterly', name: 'Quarterly', duration_months: 3, price: '5500', currency: 'INR', is_active: true },
+        { id: 'plan-half-yearly', code: 'half-yearly', name: 'Half-yearly', duration_months: 6, price: '10000', currency: 'INR', is_active: true },
+        { id: 'plan-yearly', code: 'yearly', name: 'Yearly', duration_months: 12, price: '18000', currency: 'INR', is_active: true },
+      ],
+      total: 4, limit: 100, offset: 0,
+    }),
+  ),
+  http.get(`${API_BASE_URL}/business/settings`, () =>
+    HttpResponse.json({
+      business_id: 'nest-library-001',
+      branding: {}, contact: {}, address: {}, hours: {},
+      localization: { timezone: 'Asia/Kolkata' }, operational: {},
+    }),
+  ),
+  http.patch(`${API_BASE_URL}/business/settings`, async ({ request }) => {
+    const b = await bodyOf(request)
+    const out = await updateSettings(b as Parameters<typeof updateSettings>[0])
+    return HttpResponse.json({ ...out, timezone: 'Asia/Kolkata', currency: 'INR', plans: [] })
+  }),
+  http.get(`${API_BASE_URL}/attendance`, ({ request }) =>
+    HttpResponse.json(page([], new URL(request.url))),
+  ),
+  http.post(`${API_BASE_URL}/attendance/check-in`, async () =>
+    HttpResponse.json({ id: 'att-mock-1', member_id: 'c-101', checked_in_at: new Date().toISOString(), checked_out_at: null }, { status: 201 }),
+  ),
+  http.post(`${API_BASE_URL}/attendance/:id/check-out`, async () =>
+    HttpResponse.json({ id: 'att-mock-1', checked_out_at: new Date().toISOString() }),
   ),
 ]

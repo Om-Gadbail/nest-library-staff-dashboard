@@ -8,7 +8,7 @@ export function Avatar({
   src,
   className,
 }: {
-  name: string
+  name: string | null | undefined
   src?: string
   className?: string
 }) {
@@ -20,7 +20,7 @@ export function Avatar({
       )}
     >
       {src ? (
-        <AvatarPrimitive.Image src={src} alt={name} className="h-full w-full object-cover" />
+        <AvatarPrimitive.Image src={src} alt={name ?? undefined} className="h-full w-full object-cover" />
       ) : null}
       <AvatarPrimitive.Fallback className="flex h-full w-full items-center justify-center" delayMs={200}>
         {initials(name)}

@@ -114,7 +114,7 @@ export default function CustomersPage() {
                     <div className="mt-2.5 flex flex-wrap items-center gap-1.5 text-xs">
                       <PlanBadge plan={c.plan} />
                       {m ? <PaymentBadge status={m.payment_state} /> : null}
-                      <span className="text-ink-muted">Exp {formatDate(c.expires_at)} · {expiryLabel(c.expires_at)}</span>
+                      <span className="text-ink-muted">{c.expires_at ? `Exp ${formatDate(c.expires_at)} · ${expiryLabel(c.expires_at)}` : 'No active membership'}</span>
                       {m ? <span className="ml-auto font-semibold text-ink">{formatINR(m.balance)} due</span> : null}
                     </div>
                     <div className="mt-2.5 flex gap-2">
@@ -151,7 +151,7 @@ export default function CustomersPage() {
                           </button>
                         </td>
                         <td className="px-3 py-2.5"><PlanBadge plan={c.plan} /></td>
-                        <td className="px-3 py-2.5 text-ink-secondary">{formatDate(c.expires_at)}<span className="block text-xs text-ink-muted">{expiryLabel(c.expires_at)}</span></td>
+                        <td className="px-3 py-2.5 text-ink-secondary">{c.expires_at ? formatDate(c.expires_at) : '—'}<span className="block text-xs text-ink-muted">{c.expires_at ? expiryLabel(c.expires_at) : 'No membership'}</span></td>
                         <td className="px-3 py-2.5">{m ? <div className="flex flex-col gap-1"><PaymentBadge status={m.payment_state} /><span className="text-xs text-ink-secondary">{formatINR(m.paid)}/{formatINR(m.amount)}</span></div> : '—'}</td>
                         <td className="px-3 py-2.5"><MembershipBadge status={c.status} /></td>
                         <td className="px-3 py-2.5">

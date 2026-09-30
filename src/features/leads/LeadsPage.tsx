@@ -367,7 +367,9 @@ export function ConvertDialog({ lead, onClose }: { lead: Lead | null; onClose: (
                   onSuccess: (r) => {
                     notify.success('Lead converted', `${lead.full_name} is now a customer.`)
                     onClose()
-                    navigate(`/customers/${r.customer.customer_id}`)
+                    const customerId = (r as { customer?: { customer_id?: string }; id?: string })
+                      ?.customer?.customer_id ?? (r as { id?: string })?.id
+                    if (customerId) navigate(`/customers/${customerId}`)
                   },
                 },
               )
@@ -569,8 +571,9 @@ export default function LeadsPage() {
           </Card>
         ) : (
           <>
-            {/* Mobile: stage tabs + stacked cards */}
-            <div className="lg:hidden">
+            {/* Below xl: stage tabs + stacked cards (the 6-column Kanban
+                needs xl width; at lg it would overflow the page). */}
+            <div className="xl:hidden">
               <div
                 role="tablist"
                 aria-label="Lead stages"
@@ -610,7 +613,7 @@ export default function LeadsPage() {
             </div>
 
             {/* Desktop: Kanban (scrolls at lg, six-up at xl) */}
-            <div className="hidden gap-3 overflow-x-auto pb-2 lg:flex xl:grid xl:grid-cols-6 xl:overflow-visible">
+            <div className="hidden gap-3 pb-2 xl:grid xl:grid-cols-6">
               {LEAD_STAGES.map((stage) => {
                 const cards = rows.filter((l) => l.stage === stage)
                 return (

@@ -17,6 +17,8 @@ export const queryKeys = {
   booking: (id: string) => ['booking', id] as const,
   leads: ['leads'] as const,
   lead: (id: string) => ['lead', id] as const,
+  members: ['members'] as const,
+  plans: ['plans'] as const,
   tasks: ['tasks'] as const,
   task: (id: string) => ['task', id] as const,
   analytics: (scope: string) => ['analytics', scope] as const,
