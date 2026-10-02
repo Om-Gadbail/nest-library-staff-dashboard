@@ -14,7 +14,17 @@ export const queryClient = new QueryClient({
     queries: {
       staleTime: 30_000,
       gcTime: 5 * 60_000,
-      retry: 1,
+      retry: (count, err) => {
+        const status = (err as { status?: number })?.status
+        if (status === 401 || status === 403 || status === 404) return false
+        // Render free cold start: bounded extra retries for wake-up signals.
+        const kind = (err as { kind?: string })?.kind
+        if (status === 502 || status === 503 || status === 504 || kind === 'network' || kind === 'unavailable') {
+          return count < 3
+        }
+        return count < 1
+      },
+      retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 10_000),
       refetchOnWindowFocus: true,
       refetchOnReconnect: true,
     },

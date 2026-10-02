@@ -10,7 +10,8 @@ import { useBusiness } from '@/app/use-business'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { FormField } from '@/components/forms/FormField'
-import { toApiError } from '@/api/client'
+import { API_BASE_URL, toApiError } from '@/api/client'
+import { WAKING_MESSAGE, isColdStartError, waitForBackendReady } from '@/api/readiness'
 import { notify } from '@/lib/notify'
 
 const schema = z.object({
@@ -26,6 +27,7 @@ export default function LoginPage() {
   const navigate = useNavigate()
   const location = useLocation()
   const [failed, setFailed] = React.useState<string | null>(null)
+  const [waking, setWaking] = React.useState(false)
   const from = (location.state as { from?: string } | null)?.from ?? '/dashboard'
 
   const form = useForm<FormValues>({
@@ -42,14 +44,40 @@ export default function LoginPage() {
   }, [isAuthenticated, navigate, from])
 
   async function onSubmit(values: FormValues) {
+    // Credentials stay in the form across cold-start retries (no reset),
+    // so a Render free wake-up never wipes what the user typed.
+    const attempt = () => login(values.email.trim(), values.password)
     setFailed(null)
+    setWaking(false)
     try {
-      await login(values.email.trim(), values.password)
+      await attempt()
       notify.success('Welcome back', 'Signed in successfully.')
       navigate(from, { replace: true })
     } catch (err) {
       const e = toApiError(err)
-      setFailed(e.message)
+      if (e.kind === 'network' || e.kind === 'unavailable' || isColdStartError(err)) {
+        setWaking(true)
+        setFailed(WAKING_MESSAGE)
+        try {
+          const ready = await waitForBackendReady(API_BASE_URL)
+          if (ready.ok) {
+            try {
+              await attempt()
+              notify.success('Welcome back', 'Signed in successfully.')
+              navigate(from, { replace: true })
+              return
+            } catch (retryErr) {
+              setFailed(toApiError(retryErr).message)
+            }
+          } else {
+            setFailed(e.message)
+          }
+        } finally {
+          setWaking(false)
+        }
+      } else {
+        setFailed(e.message)
+      }
     }
   }
 
@@ -111,7 +139,7 @@ export default function LoginPage() {
               disabled={form.formState.isSubmitting}
             >
               <LogIn className="size-4" />
-              {form.formState.isSubmitting ? 'Signing in…' : 'Sign in'}
+              {form.formState.isSubmitting ? (waking ? 'Waking backend...' : 'Signing in…') : 'Sign in'}
             </Button>
           </form>
           <p className="mt-4 text-center text-xs text-ink-muted">

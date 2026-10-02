@@ -39,6 +39,8 @@ function kindFor(status?: number, code?: string): ApiErrorKind {
   return 'network'
 }
 
+import { coldStartDelay, isColdStartAxiosError, sleep } from './readiness'
+
 export function toApiError(error: unknown): ApiErrorShape {
   if (axios.isAxiosError(error)) {
     const ax = error as AxiosError<{
@@ -48,7 +50,7 @@ export function toApiError(error: unknown): ApiErrorShape {
     }>
     if (!ax.response) {
       return {
-        message: 'Network error. Check your connection and retry.',
+        message: 'Backend may be waking up. Your entries were kept; wait a moment and try again.',
         kind: 'network',
         code: ax.code,
       }
@@ -152,6 +154,17 @@ apiClient.interceptors.response.use(
     const status = ax.response?.status
     const url = original?.url ?? ''
     const isAuthCall = url.includes('/auth/login') || url.includes('/auth/refresh')
+    // Render free cold start: retry idempotent GETs with bounded backoff.
+    // Mutations are never auto-retried (no duplicate payments/bookings).
+    const method = (original?.method ?? 'get').toLowerCase()
+    if (method === 'get' && original && isColdStartAxiosError(error)) {
+      const prior = (original as typeof original & { _coldStartRetries?: number })._coldStartRetries ?? 0
+      if (prior < 3) {
+        ;(original as typeof original & { _coldStartRetries?: number })._coldStartRetries = prior + 1
+        await sleep(coldStartDelay(prior + 1))
+        return apiClient(original)
+      }
+    }
     if (status === 401 && original && !original._retried && !isAuthCall) {
       original._retried = true
       try {
